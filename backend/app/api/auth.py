@@ -1,0 +1,143 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from datetime import timedelta
+from app.core.security import (
+    verify_password, get_password_hash, create_access_token, get_current_user
+)
+from app.core.database import get_db, release_db
+from app.core.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+@router.post("/register")
+async def register(user_data: dict):
+    """Register a new user"""
+    logger.info(f"Registration attempt for email: {user_data.get('email')}")
+    logger.info(f"Received data: {user_data}")
+    
+    try:
+        conn = await get_db()
+        logger.info("Database connection successful")
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        # Fallback for demo without database - create realistic demo user
+        import uuid
+        user_id = str(uuid.uuid4())
+        return {
+            "message": "User registered successfully (demo mode - database unavailable)",
+            "user_id": user_id,
+            "note": "In demo mode, data is not persisted. Please configure PostgreSQL for full functionality."
+        }
+    
+    try:
+        # Check if user exists
+        existing_user = await conn.fetchrow(
+            "SELECT id FROM users WHERE email = $1",
+            user_data.get("email")
+        )
+        if existing_user:
+            logger.warning(f"Email already registered: {user_data.get('email')}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        # Hash password
+        hashed_password = get_password_hash(user_data.get("password"))
+        logger.info("Password hashed successfully")
+        
+        # Convert age to integer
+        try:
+            age = int(user_data.get("age", 0)) if user_data.get("age") else None
+        except (ValueError, TypeError):
+            age = None
+        
+        # Create user
+        user_id = await conn.fetchrow("""
+            INSERT INTO users (email, password, full_name, age, gender)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+        """, user_data.get("email"), hashed_password, user_data.get("full_name"), 
+            age, user_data.get("gender"))
+        
+        logger.info(f"User created successfully with ID: {user_id['id']}")
+        
+        return {
+            "message": "User registered successfully",
+            "user_id": str(user_id["id"])
+        }
+    except Exception as e:
+        logger.error(f"Registration error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
+    finally:
+        await release_db(conn)
+
+@router.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Login user and return access token"""
+    try:
+        conn = await get_db()
+    except Exception:
+        # Fallback for demo without database - generate realistic demo token
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": "demo-user"}, expires_delta=access_token_expires
+        )
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": "demo-user",
+            "note": "In demo mode, data is not persisted. Please configure PostgreSQL for full functionality."
+        }
+    
+    try:
+        user = await conn.fetchrow(
+            "SELECT * FROM users WHERE email = $1",
+            form_data.username
+        )
+        
+        if not user or not verify_password(form_data.password, user["password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": str(user["id"])}, expires_delta=access_token_expires
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": str(user["id"])
+        }
+    finally:
+        await release_db(conn)
+
+@router.get("/me")
+async def get_me(current_user: str = Depends(get_current_user)):
+    """Get current user information"""
+    conn = await get_db()
+    try:
+        user = await conn.fetchrow(
+            "SELECT id, email, full_name, age, gender, created_at, conditions, medications, health_profile FROM users WHERE id = $1",
+            int(current_user)
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_dict = dict(user)
+        user_dict.pop("password", None)
+        user_dict["id"] = str(user_dict["id"])
+        
+        return user_dict
+    finally:
+        await release_db(conn)

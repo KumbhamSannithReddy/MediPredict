@@ -1,0 +1,43 @@
+import asyncpg
+from app.core.config import settings
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# PostgreSQL Connection
+pool = None
+
+async def init_db():
+    """Initialize PostgreSQL connection pool"""
+    global pool
+    try:
+        pool = await asyncpg.create_pool(
+            settings.DATABASE_URL,
+            min_size=1,
+            max_size=5,
+            command_timeout=10
+        )
+        logger.info("PostgreSQL connection pool created successfully")
+    except Exception as e:
+        logger.warning(f"PostgreSQL connection failed: {e}. Running without database.")
+        pool = None
+
+async def close_db():
+    """Close PostgreSQL connection pool"""
+    global pool
+    if pool:
+        await pool.close()
+        logger.info("PostgreSQL connection pool closed")
+
+async def get_db():
+    """Get database connection from pool"""
+    if pool is None:
+        raise Exception("Database not connected")
+    conn = await pool.acquire()
+    return conn
+
+async def release_db(conn):
+    """Release database connection back to pool"""
+    if pool and conn:
+        await pool.release(conn)

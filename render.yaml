@@ -1,0 +1,36 @@
+services:
+  # Backend API Service
+  - type: web
+    name: medipredict-backend
+    runtime: docker
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: PYTHON_VERSION
+        value: 3.9
+      # Database Configuration (Render provides free PostgreSQL)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: medipredict-db
+          property: connectionString
+      # OpenAI API Key - Add your real API key here
+      - key: OPENAI_API_KEY
+        value: "sk-placeholder"  # REPLACE WITH YOUR REAL KEY
+      # Security
+      - key: SECRET_KEY
+        generateValue: true
+      # Feature flags
+      - key: ENABLE_ML_MODELS
+        value: "false"
+      - key: ENABLE_OCR
+        value: "false"
+      - key: ENABLE_RAG
+        value: "true"
+
+databases:
+  # Free PostgreSQL database from Render
+  - name: medipredict-db
+    databaseName: medipredict
+    user: medipredict_user
+    plan: free
